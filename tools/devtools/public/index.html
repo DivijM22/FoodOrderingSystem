@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Food Platform — Testing Console</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Food Platform · Testing Console</h1>
+      <p class="sub">Development only. Every action is a real call to the API gateway (<code id="gw"></code>) with the signed-in user's token — the backend enforces every role and ownership rule.</p>
+    </div>
+    <nav>
+      <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>
+      <a id="mailpitLink" target="_blank" rel="noopener">Mailpit</a>
+      <a id="rabbitLink" target="_blank" rel="noopener">RabbitMQ</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="col">
+      <!-- ===================================================== account -->
+      <article class="card">
+        <h2>Account</h2>
+        <div data-roles="guest">
+          <form id="loginForm" autocomplete="off" class="grid2">
+            <input name="email" type="email" placeholder="Email address" required>
+            <input name="password" type="password" placeholder="Password" required>
+            <button type="submit">Log in</button>
+          </form>
+          <p class="muted">Any role: customer, restaurant admin, delivery agent or platform admin.</p>
+        </div>
+        <div data-roles="signed-in">
+          <div class="row"><span id="whoami"></span><button id="btnLogout" class="secondary">Log out</button></div>
+        </div>
+        <div id="accountMsg" class="info"></div>
+      </article>
+
+      <!-- ===================================================== create user (always visible) -->
+      <article class="card">
+        <h2>Create user</h2>
+        <form id="createUserForm" autocomplete="off" class="grid2">
+          <input name="name" placeholder="Full name" required minlength="2" maxlength="80">
+          <input name="email" type="email" placeholder="Email address" required>
+          <input name="password" type="password" placeholder="Password" required minlength="8" maxlength="72">
+          <input name="confirm" type="password" placeholder="Confirm password" required minlength="8" maxlength="72">
+          <select name="role" required>
+            <option value="customer" selected>customer</option>
+            <option value="restaurant_admin">restaurant_admin</option>
+            <option value="delivery_agent">delivery_agent</option>
+            <option value="platform_admin">platform_admin</option>
+          </select>
+          <div id="cuRestaurantsWrap" class="span2" hidden>
+            <label class="muted" for="cuRestaurants">Restaurants this administrator will manage (required — Ctrl/Cmd-click to select several)</label>
+            <select id="cuRestaurants" multiple size="5"></select>
+          </div>
+          <button type="submit" id="btnCreateUser">Create user</button>
+        </form>
+        <p id="createUserWarning" class="err" hidden>You must be logged in as a Platform Administrator to create this account type.</p>
+        <p class="muted">Password: 8–72 characters with at least one letter and one digit. <b>customer</b> accounts can be created by anyone
+          (<code>POST /auth/register</code>); other roles only by a signed-in platform administrator (<code>POST /auth/users</code> with their token).
+          The backend enforces this either way. Delivery agents add their contact phone when they first go available.</p>
+        <div id="createUserMsg" class="info"></div>
+        <div class="row"><button id="btnRetryAssign" class="warn" hidden>Retry restaurant assignment</button></div>
+      </article>
+
+      <article class="card" data-roles="platform_admin">
+        <h2>Users <button id="btnUsers" class="tiny secondary">refresh</button></h2>
+        <div class="row">
+          <select id="userRoleFilter"><option value="">All roles</option><option>customer</option><option>restaurant_admin</option><option>delivery_agent</option><option>platform_admin</option></select>
+        </div>
+        <div id="users" class="scroll small"></div>
+      </article>
+
+      <article class="card" data-roles="platform_admin">
+        <h2>Restaurant administrators <button id="btnAssignments" class="tiny secondary">refresh</button></h2>
+        <div class="row"><select id="asgRestaurant" class="grow"></select></div>
+        <div id="asgList" class="info"></div>
+        <div class="row">
+          <select id="asgAdmin" class="grow"></select>
+          <button id="btnAddAdmin">Add administrator</button>
+        </div>
+        <p class="muted">A restaurant can have several administrators and an administrator several restaurants; all have identical permissions.
+          Uses <code>POST /restaurants/:id/admins</code> and <code>DELETE /restaurants/:id/admins/:userId</code> (platform admin only).</p>
+        <div id="assignMsg" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="platform_admin">
+        <h2>Create a restaurant</h2>
+        <form id="createRestaurantForm" class="grid2" autocomplete="off">
+          <input name="name" placeholder="Name" required minlength="2" maxlength="100">
+          <input name="cuisines" placeholder="Cuisines, comma separated" required>
+          <input name="description" placeholder="Description (10–500 chars)" required minlength="10" maxlength="500" class="span2">
+          <input name="line1" placeholder="Address line" required minlength="3">
+          <input name="area" placeholder="Area" required minlength="2">
+          <input name="city" placeholder="City" required minlength="2">
+          <input name="pincode" placeholder="PIN code" pattern="[1-9][0-9]{5}" required>
+          <input name="costForTwo" type="number" min="0" step="1" placeholder="Cost for two (₹)" required>
+          <input name="avgDeliveryMinutes" type="number" min="5" max="180" placeholder="Avg delivery minutes" required>
+          <input name="opens" placeholder="Opens (HH:mm, default 10:00)" pattern="([01][0-9]|2[0-3]):[0-5][0-9]">
+          <input name="closes" placeholder="Closes (HH:mm, default 23:00)" pattern="([01][0-9]|2[0-3]):[0-5][0-9]">
+          <label class="check"><input name="isPureVeg" type="checkbox"> Pure veg</label>
+          <div class="span2">
+            <label class="muted" for="crAdmins">Initial restaurant administrators (optional — Ctrl/Cmd-click to select several)</label>
+            <select id="crAdmins" multiple size="4"></select>
+          </div>
+          <button type="submit">Create restaurant</button>
+        </form>
+        <p class="muted">Only platform administrators create restaurants (<code>POST /restaurants</code>). A restaurant may start with no administrators.</p>
+        <div id="createRestaurantMsg" class="info"></div>
+      </article>
+
+      <!-- ===================================================== restaurant admin -->
+      <article class="card" data-roles="restaurant_admin">
+        <h2>My restaurants <button id="btnMyRestaurants" class="tiny secondary">refresh</button></h2>
+        <div class="row">
+          <select id="myRestaurant" class="grow"></select>
+          <button id="btnToggleOpen" class="secondary">Open / close</button>
+        </div>
+        <div id="myRestaurantInfo" class="info"></div>
+        <form id="editRestaurantForm" class="grid2" autocomplete="off">
+          <input name="description" placeholder="Description (10–500 chars)" minlength="10" maxlength="500">
+          <input name="costForTwo" type="number" min="0" step="1" placeholder="Cost for two (₹)">
+          <input name="avgDeliveryMinutes" type="number" min="5" max="180" placeholder="Avg delivery minutes">
+          <button type="submit" class="secondary">Save details</button>
+        </form>
+      </article>
+
+      <article class="card" data-roles="restaurant_admin">
+        <h2>Menu</h2>
+        <div id="ownerMenu" class="scroll"></div>
+        <h3>Add a menu item</h3>
+        <form id="addItemForm" class="grid2" autocomplete="off">
+          <input name="name" placeholder="Item name" required minlength="2" maxlength="100">
+          <input name="category" placeholder="Category (e.g. Starters)" required minlength="2" maxlength="60">
+          <input name="price" type="number" min="1" step="0.01" placeholder="Price (₹)" required>
+          <label class="check"><input name="isVeg" type="checkbox"> Vegetarian</label>
+          <input name="description" placeholder="Description (optional)" maxlength="300">
+          <button type="submit">Add item</button>
+        </form>
+        <div id="menuMsg" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="restaurant_admin">
+        <h2>Orders for this restaurant <button id="btnRestaurantOrders" class="tiny secondary">refresh</button></h2>
+        <div id="restaurantOrders" class="scroll small"></div>
+      </article>
+
+
+      <!-- ===================================================== delivery agent -->
+      <article class="card" data-roles="delivery_agent">
+        <h2>Partner profile <button id="btnAgentRefresh" class="tiny secondary">refresh</button></h2>
+        <div id="agentProfile" class="info"></div>
+        <div class="row">
+          <input id="agentPhone" placeholder="Contact phone (10–15 digits)" pattern="\+?[0-9]{10,15}">
+          <button id="btnAvailable" class="ok">Go available</button>
+          <button id="btnOffline" class="secondary">Go offline</button>
+        </div>
+        <p class="muted">The phone is required once to register as a partner; customers see it masked (e.g. 98XXXXXX01) while you deliver. Only available partners are assigned (randomly) after a restaurant finishes preparing an order.</p>
+      </article>
+
+      <article class="card" data-roles="delivery_agent">
+        <h2>Active delivery</h2>
+        <div id="agentDelivery" class="info"><p class="muted">No active delivery.</p></div>
+        <div class="row">
+          <button id="btnPickup">Confirm pickup</button>
+          <button id="btnArrived">Report arrival</button>
+          <button id="btnResend" class="secondary">Resend code</button>
+        </div>
+        <div class="row">
+          <input id="otp" placeholder="Customer's 6-digit code" maxlength="6" inputmode="numeric">
+          <button id="btnVerify" class="ok">Submit code</button>
+        </div>
+        <p class="muted">The customer receives the code by email (local Mailpit) and tells it to the partner at handover.</p>
+        <div id="agentMsg" class="info"></div>
+      </article>
+
+      <!-- ===================================================== customer -->
+      <article class="card" data-roles="customer">
+        <h2><span class="n">1</span>Restaurant and menu</h2>
+        <div class="row">
+          <select id="restaurantSelect" class="grow"></select>
+          <button id="btnLoadMenu" class="secondary">Load menu</button>
+        </div>
+        <div id="menu" class="scroll"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2><span class="n">2</span>Place the order</h2>
+        <div class="grid2">
+          <input id="addrLine1" placeholder="Address line 1">
+          <input id="addrCity" placeholder="City">
+          <input id="addrPincode" placeholder="PIN code">
+          <select id="discountSelect"><option value="">No promo code</option></select>
+        </div>
+        <div class="row"><button id="btnOrder">Place order</button></div>
+        <div id="orderInfo" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2>My orders <button id="btnMyOrders" class="tiny secondary">refresh</button></h2>
+        <div id="myOrders" class="scroll small"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2><span class="n">3</span>Invoice</h2>
+        <div class="row"><button id="btnInvoice" class="secondary">Load finalized invoice</button></div>
+        <div id="invoice" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2><span class="n">4</span>Payment (mock provider)</h2>
+        <div class="row">
+          <button id="btnInitiate">Start payment</button>
+          <button id="btnSucceed" class="ok">Simulate card success</button>
+          <button id="btnFail" class="warn">Simulate card decline</button>
+        </div>
+        <p class="muted">Start payment waits for <code>billing.finalized</code> (409 BILLING_PENDING is retried). After a decline, start payment again.</p>
+        <div id="payment" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2><span class="n">5</span>Delivery code</h2>
+        <div class="row"><button id="btnFindOtp" class="secondary">Show the code from my email (Mailpit)</button></div>
+        <p class="muted">Sent when the partner reports arrival. Give it to the partner only once you have your order.</p>
+        <div id="customerOtp" class="info"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2><span class="n">6</span>Cancellation and refund</h2>
+        <div class="row">
+          <input id="cancelReason" placeholder="Reason (3–200 chars)" class="grow">
+          <button id="btnCancel" class="warn">Cancel order</button>
+        </div>
+        <p class="muted">Allowed while pending payment or confirmed (before a partner is assigned). Paid orders are refunded automatically.</p>
+        <div id="cancel" class="info"></div>
+      </article>
+    </section>
+
+    <section class="col">
+      <article class="card" data-roles="customer">
+        <h2>Live tracking <span id="sseState" class="pill">no order selected</span></h2>
+        <div id="tracking"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2>Events for this order <button id="btnEvents" class="tiny secondary">refresh</button></h2>
+        <p class="muted">From RabbitMQ <code>food.events</code> (metadata only; the OTP travels on a restricted exchange and is never visible here).</p>
+        <div id="events" class="scroll"></div>
+      </article>
+
+      <article class="card" data-roles="customer">
+        <h2>My emails (Mailpit) <button id="btnMail" class="tiny secondary">refresh</button></h2>
+        <div id="mail" class="scroll small"></div>
+      </article>
+
+      <article class="card">
+        <h2>Platform health <button id="btnHealth" class="tiny secondary">refresh</button></h2>
+        <div id="health"></div>
+      </article>
+
+      <article class="card">
+        <h2>Queues and dead letters <button id="btnQueues" class="tiny secondary">refresh</button></h2>
+        <div id="queues" class="scroll small"></div>
+        <div id="dlq"></div>
+      </article>
+
+      <article class="card">
+        <h2>Request log</h2>
+        <p class="muted">Gateway calls made by this page (method, path, status, x-request-id, duration). Tokens and passwords are never logged.</p>
+        <div id="log" class="scroll small mono"></div>
+      </article>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

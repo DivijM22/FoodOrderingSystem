@@ -1,0 +1,280 @@
+# Local development environment.
+#   docker compose up -d --build        # everything
+#   docker compose up -d mongo rabbitmq # infrastructure only (run services with `npm run dev`)
+name: food-platform
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  depends_on:
+    mongo:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  environment: &common-env
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (see .env.example)}
+    JWT_ISSUER: food-auth-service
+    JWT_AUDIENCE: food-platform
+
+services:
+  # ---------- infrastructure ----------
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    # Single-node replica set: required for multi-document transactions (order outbox).
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      # Initiates the replica set on first boot, then reports healthy once a primary exists.
+      test: >
+        mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # One-shot: per-service broker users, least-privilege permissions, exchanges (re-run on every `up`; idempotent).
+  rabbitmq-setup:
+    build: { context: infra/rabbitmq-setup }
+    image: food/rabbitmq-setup:dev
+    restart: "no"
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    environment:
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_USER:-food}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_PASSWORD:-food-dev-password}
+      RABBITMQ_AUTH_PASSWORD: ${RABBITMQ_AUTH_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_CATALOG_PASSWORD: ${RABBITMQ_CATALOG_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_ORDER_PASSWORD: ${RABBITMQ_ORDER_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_PAYMENT_PASSWORD: ${RABBITMQ_PAYMENT_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_BILLING_PASSWORD: ${RABBITMQ_BILLING_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_DELIVERY_PASSWORD: ${RABBITMQ_DELIVERY_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_NOTIFICATION_PASSWORD: ${RABBITMQ_NOTIFICATION_PASSWORD:?Run node scripts/init-env.mjs}
+      RABBITMQ_DEVTOOLS_PASSWORD: ${RABBITMQ_DEVTOOLS_PASSWORD:?Run node scripts/init-env.mjs}
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    hostname: rabbitmq # stable node name so durable queues survive container recreation
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-food}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-food-dev-password}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI → http://localhost:15672
+    volumes: [rabbitmq-data:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ---------- microservices ----------
+  auth-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/auth/Dockerfile }
+    image: food/auth-service:dev
+    ports: ["4001:4001"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4001
+      MONGO_URI: mongodb://mongo:27017/auth_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://auth-service:${RABBITMQ_AUTH_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      BCRYPT_ROUNDS: 10
+      JWT_EXPIRES_IN: 1h
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@food.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env (see .env.example)}
+      ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
+
+  catalog-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/catalog/Dockerfile }
+    image: food/catalog-service:dev
+    ports: ["4002:4002"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4002
+      MONGO_URI: mongodb://mongo:27017/catalog_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://catalog-service:${RABBITMQ_CATALOG_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      SEED_ON_START: ${SEED_ON_START:-true}
+
+  order-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/order/Dockerfile }
+    image: food/order-service:dev
+    ports: ["4003:4003"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4003
+      MONGO_URI: mongodb://mongo:27017/order_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://order-service:${RABBITMQ_ORDER_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      # Unpaid orders expire after this many seconds (default 15 min); the worker sweeps every EXPIRY_SWEEP_INTERVAL_MS.
+      ORDER_PAYMENT_DEADLINE_SECONDS: ${ORDER_PAYMENT_DEADLINE_SECONDS:-900}
+      EXPIRY_SWEEP_INTERVAL_MS: ${EXPIRY_SWEEP_INTERVAL_MS:-15000}
+
+  billing-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/billing/Dockerfile }
+    image: food/billing-service:dev
+    ports: ["4005:4005"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4005
+      MONGO_URI: mongodb://mongo:27017/billing_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://billing-service:${RABBITMQ_BILLING_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      MIN_PAYABLE_AMOUNT: 100
+      SEED_DISCOUNTS: "true"
+
+  payment-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/payment/Dockerfile }
+    image: food/payment-service:dev
+    ports: ["4004:4004"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4004
+      MONGO_URI: mongodb://mongo:27017/payment_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://payment-service:${RABBITMQ_PAYMENT_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      # mock (default) = simulated locally; stripe = real Stripe TEST mode (needs the two keys below).
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-mock}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      MOCK_WEBHOOK_SECRET: ${MOCK_WEBHOOK_SECRET:-whsec_mock_local_development_only}
+      ENABLE_TEST_ENDPOINTS: ${ENABLE_PAYMENT_TEST_ENDPOINTS:-true}
+
+  notification-service:
+    # Internal only: no published port and no gateway route. Consumes order.# events, sends email via SMTP.
+    build: { context: ., dockerfile: services/notification/Dockerfile }
+    image: food/notification-service:dev
+    restart: unless-stopped
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+      # Not a hard dependency at runtime (queued emails wait for SMTP), only for orderly startup.
+      mailpit: { condition: service_started }
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: 4006
+      MONGO_URI: mongodb://mongo:27017/notification_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://notification-service:${RABBITMQ_NOTIFICATION_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-FoodApp <no-reply@food.local>}
+      NOTIFY_MAX_ATTEMPTS: ${NOTIFY_MAX_ATTEMPTS:-8}
+      # Opens delivery codes sealed by the Delivery Service (restricted workflow).
+      NOTIFICATION_OTP_PRIVATE_KEY: ${NOTIFICATION_OTP_PRIVATE_KEY:?Run node scripts/init-env.mjs}
+
+  delivery-service:
+    <<: *service-defaults
+    build: { context: ., dockerfile: services/delivery/Dockerfile }
+    image: food/delivery-service:dev
+    ports: ["4007:4007"]
+    depends_on:
+      mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      <<: *common-env
+      PORT: 4007
+      MONGO_URI: mongodb://mongo:27017/delivery_db?replicaSet=rs0
+      RABBITMQ_URL: amqp://delivery-service:${RABBITMQ_DELIVERY_PASSWORD:?Run node scripts/init-env.mjs}@rabbitmq:5672
+      # Short local defaults so the lifecycle can be demonstrated quickly (state is persisted, not in timers).
+      PREPARATION_DELAY_MS: ${PREPARATION_DELAY_MS:-15000}
+      ASSIGNMENT_DELAY_MS: ${ASSIGNMENT_DELAY_MS:-5000}
+      ASSIGNMENT_RETRY_MS: ${ASSIGNMENT_RETRY_MS:-10000}
+      ASSIGNMENT_MAX_ATTEMPTS: ${ASSIGNMENT_MAX_ATTEMPTS:-60}
+      ASSIGNMENT_TIMEOUT_MS: ${ASSIGNMENT_TIMEOUT_MS:-600000}
+      OTP_TTL_MS: ${OTP_TTL_MS:-300000}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+      OTP_MAX_ISSUES: ${OTP_MAX_ISSUES:-3}
+      OTP_RESEND_COOLDOWN_MS: ${OTP_RESEND_COOLDOWN_MS:-30000}
+      OTP_HMAC_KEY: ${OTP_HMAC_KEY:?Run node scripts/init-env.mjs}
+      NOTIFICATION_OTP_PUBLIC_KEY: ${NOTIFICATION_OTP_PUBLIC_KEY:?Run node scripts/init-env.mjs}
+
+  # ---------- local email capture (development SMTP; nothing leaves the machine) ----------
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # web UI + API → http://localhost:8025
+      - "1025:1025" # SMTP
+    environment:
+      MP_MAX_MESSAGES: 5000
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  # ---------- development-only console: Swagger UI, testing console, observability ----------
+  # Bound to 127.0.0.1 only. Uses the public gateway like any client; a read-only "devtools" broker user;
+  # no database access. Never part of a production deployment.
+  devtools:
+    build: { context: ., dockerfile: tools/devtools/Dockerfile }
+    image: food/devtools:dev
+    restart: unless-stopped
+    ports: ["127.0.0.1:3100:3100"]
+    depends_on:
+      gateway: { condition: service_started }
+      rabbitmq-setup: { condition: service_completed_successfully }
+    environment:
+      NODE_ENV: development
+      GATEWAY_URL: http://gateway
+      MAILPIT_URL: http://mailpit:8025
+      RABBITMQ_API: http://rabbitmq:15672/api
+      RABBITMQ_DEVTOOLS_PASSWORD: ${RABBITMQ_DEVTOOLS_PASSWORD:?Run node scripts/init-env.mjs}
+      PUBLIC_GATEWAY_URL: http://localhost:8080
+      PUBLIC_MAILPIT_URL: http://localhost:8025
+      PUBLIC_RABBITMQ_URL: http://localhost:15672
+
+  # ---------- web frontend (React SPA, static files; the browser calls the gateway directly) ----------
+  frontend:
+    build: { context: frontend }
+    image: food/frontend:dev
+    restart: unless-stopped
+    ports: ["3000:80"] # → http://localhost:3000
+    environment:
+      # The API gateway URL as the *browser* reaches it (not a Docker-internal hostname).
+      API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
+    depends_on: [gateway]
+
+  # ---------- single entry point (reverse proxy, no business logic) ----------
+  gateway:
+    build: { context: infra/nginx }
+    image: food/gateway:dev
+    restart: unless-stopped
+    ports: ["8080:80"]
+    depends_on: [auth-service, catalog-service, order-service, payment-service, billing-service, delivery-service]
+
+volumes:
+  mongo-data:
+  rabbitmq-data:

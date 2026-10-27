@@ -1,0 +1,34 @@
+# Azure single-VM overlay. Use it together with the base file on the VM:
+#   docker compose -f docker-compose.yml -f docker-compose.azure.yml <command>
+# - The frontend is the only public entry point (port 80) and proxies /api/* to gateway:80 (same origin, no CORS,
+#   no browser requests to localhost:8080).
+# - The gateway and every infrastructure/service port are bound to 127.0.0.1: reachable from the VM itself
+#   (curl, SSH tunnels) but never from the internet, independently of the NSG rules.
+# `!override` needs Docker Compose v2.24.4 or newer.
+services:
+  frontend:
+    ports: !override ["80:80"]
+    environment:
+      API_URL: /api
+
+  gateway:
+    ports: !override ["127.0.0.1:8080:80"]
+
+  mongo:
+    ports: !override ["127.0.0.1:27017:27017"]
+  rabbitmq:
+    ports: !override ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
+  mailpit:
+    ports: !override ["127.0.0.1:8025:8025", "127.0.0.1:1025:1025"]
+  auth-service:
+    ports: !override ["127.0.0.1:4001:4001"]
+  catalog-service:
+    ports: !override ["127.0.0.1:4002:4002"]
+  order-service:
+    ports: !override ["127.0.0.1:4003:4003"]
+  payment-service:
+    ports: !override ["127.0.0.1:4004:4004"]
+  billing-service:
+    ports: !override ["127.0.0.1:4005:4005"]
+  delivery-service:
+    ports: !override ["127.0.0.1:4007:4007"]

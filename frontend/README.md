@@ -78,7 +78,15 @@ The browser calls the gateway **directly**, cross-origin; the services already a
 2. `VITE_API_URL` at build time.
 3. `http://localhost:8080`.
 
-`API_URL` must be the gateway address **as the user's browser reaches it**, not a Docker-internal hostname.
+`API_URL` must be the gateway address **as the user's browser reaches it**, not a Docker-internal hostname. Alternatively it can be the
+same-origin path **`/api`**: the container's nginx proxies `/api/*` to `http://gateway:80/*`, stripping the prefix and passing the method,
+body, query string and `Authorization` header through, with buffering off for SSE. The browser then only ever calls the frontend's own origin.
+`docker-compose.azure.yml` uses this. It publishes the frontend on port 80 with `API_URL=/api` and binds the gateway and all other ports to
+`127.0.0.1`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d --build --no-deps frontend
+```
 
 ## Sessions
 

@@ -263,7 +263,8 @@ services:
     restart: unless-stopped
     ports: ["3000:80"] # → http://localhost:3000
     environment:
-      # The API gateway URL as the *browser* reaches it (not a Docker-internal hostname).
+      # The API gateway URL as the *browser* reaches it (not a Docker-internal hostname), or /api for the
+      # container's same-origin proxy to gateway:80 (used by docker-compose.azure.yml).
       API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
     depends_on: [gateway]
 
